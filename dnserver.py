@@ -101,9 +101,7 @@ class Resolver(ProxyResolver):
         blocks = json.load(open(blocks_file, 'r'))
         ret = list()
         for obj in blocks:
-            print(obj)
             for prefix in blocks[obj]:
-                print(prefix)
                 ret.append(ipaddress.ip_network(prefix['prefix']))
         return ret
 
@@ -149,11 +147,8 @@ class Resolver(ProxyResolver):
         logger.info('no local zone found, proxying %s[%s]', request.q.qname, type_name)
         proxy_resp = super().resolve(request, handler)
         if type_name == 'A':
-            for r in proxy_resp.rr:
-                print("-->", r)
             if(self.check_block(proxy_resp.rr)):
-
-                rr = RR(proxy_resp.rr[0].get_rname(), request.q.qtype, ttl=60, rdata=A("193.29.204.11"))
+                rr = RR(proxy_resp.rr[0].get_rname(), request.q.qtype, ttl=60, rdata=A("127.0.0.1"))
                 proxy_resp.rr = [rr]
                 return proxy_resp
         return super().resolve(request, handler)
