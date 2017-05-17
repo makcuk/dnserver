@@ -3,12 +3,13 @@ import json
 import logging
 import os
 import signal
+import ipaddress
 from datetime import datetime
 from pathlib import Path
 from textwrap import wrap
 from time import sleep
 
-from dnslib import DNSLabel, QTYPE, RR, dns
+from dnslib import DNSLabel, QTYPE, RR, A, dns, DNSRecord
 from dnslib.proxy import ProxyResolver
 from dnslib.server import DNSServer
 
@@ -77,8 +78,9 @@ class Record:
 
 
 class Resolver(ProxyResolver):
-    def __init__(self, upstream, zone_file):
+    def __init__(self, upstream, zone_file, blocks_file):
         super().__init__(upstream, 53, 5)
+        self.blocks = self.load_blocks(blocks_file)
         self.records = self.load_zones(zone_file)
 
     def zone_lines(self):
@@ -93,6 +95,17 @@ class Resolver(ProxyResolver):
             current_line += line.lstrip('\r\n\t ')
         if current_line:
             yield current_line
+
+    def load_blocks(self, blocks_file):
+        assert blocks_file.exists()
+        blocks = json.load(open(blocks_file, 'r'))
+        ret = list()
+        for obj in blocks:
+            print(obj)
+            for prefix in blocks[obj]:
+                print(prefix)
+                ret.append(ipaddress.ip_network(prefix['prefix']))
+        return ret
 
     def load_zones(self, zone_file):
         assert zone_file.exists(), f'zone files "{zone_file}" does not exist'
@@ -120,7 +133,6 @@ class Resolver(ProxyResolver):
         for record in self.records:
             if record.match(request.q):
                 reply.add_answer(record.rr)
-
         if reply.rr:
             logger.info('found zone for %s[%s], %d replies', request.q.qname, type_name, len(reply.rr))
             return reply
@@ -135,8 +147,25 @@ class Resolver(ProxyResolver):
             return reply
 
         logger.info('no local zone found, proxying %s[%s]', request.q.qname, type_name)
+        proxy_resp = super().resolve(request, handler)
+        if type_name == 'A':
+            for r in proxy_resp.rr:
+                print("-->", r)
+            if(self.check_block(proxy_resp.rr)):
+
+                rr = RR(proxy_resp.rr[0].get_rname(), request.q.qtype, ttl=60, rdata=A("193.29.204.11"))
+                proxy_resp.rr = [rr]
+                return proxy_resp
         return super().resolve(request, handler)
 
+    def check_block(self, a_rec):
+        for r in a_rec:
+            if r.rtype == 1:
+                for net in self.blocks:
+                    if ipaddress.ip_address(r.rdata) in net:
+                        logger.info("Address %s blocked" % ( r.rdata))
+                        return True
+        return False
 
 def handle_sig(signum, frame):
     logger.info('pid=%d, got signal: %s, stopping...', os.getpid(), signal.Signals(signum).name)
@@ -149,7 +178,8 @@ if __name__ == '__main__':
     port = int(os.getenv('PORT', 53))
     upstream = os.getenv('UPSTREAM', '8.8.8.8')
     zone_file = Path(os.getenv('ZONE_FILE', '/zones/zones.txt'))
-    resolver = Resolver(upstream, zone_file)
+    blocks_file =  Path(os.getenv('BLOCKS_FILE', '/block/block.json'))
+    resolver = Resolver(upstream, zone_file, blocks_file)
     udp_server = DNSServer(resolver, port=port)
     tcp_server = DNSServer(resolver, port=port, tcp=True)
 
